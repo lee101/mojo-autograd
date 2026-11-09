@@ -103,11 +103,11 @@ real `autograd`. Every case verifies numerical agreement before timing.
 
 | case | reference | mojo-autograd | result |
 | --- | ---: | ---: | ---: |
-| tanh vjp n=4194304 | 102.07 ms | 58.83 ms | 1.74x faster |
-| exp vjp n=4194304 | 17.57 ms | 18.97 ms | 0.93x, 1.1x slower |
-| gemm 600x300x200 | 5.67 ms | 14.94 ms | 0.38x, 2.6x slower |
-| gemm 64x64x64 (serial) | 0.03 ms | 1.36 ms | 0.02x, 45x slower |
-| model gradient x20 | 11.76 ms | 19.93 ms | 0.59x, 1.7x slower |
+| tanh vjp n=4194304 | 109.08 ms | 64.71 ms | 1.69x faster |
+| exp vjp n=4194304 | 18.41 ms | 18.87 ms | 0.98x, 1.0x slower |
+| gemm 600x300x200 | 4.60 ms | 21.26 ms | 0.22x, 4.6x slower |
+| gemm 64x64x64 (serial) | 0.03 ms | 1.32 ms | 0.02x, 44x slower |
+| model gradient x20 | 12.19 ms | 20.70 ms | 0.59x, 1.7x slower |
 
 Four of those are losses and are reported as losses.
 
@@ -119,14 +119,14 @@ Four of those are losses and are reported as losses.
 - `exp` is a loss at this size: upstream's VJP is `g * y`, already one pass in
   NumPy, so there is nothing to win and the ctypes wrapper makes it slightly
   slower. The earlier table reported 1.09x faster; repeated measurement in this
-  session gives ~0.9x.
+  session gives ~0.98x (essentially parity, listed as slower).
 - The large gemm is a loss in this session's runs: the Mojo kernel is a scalar
   FMA triple loop (no SIMD, see `bench/analysis.md`) and loses to OpenBLAS at
   600x300x200. The earlier table reported 2.58x faster at 109 ms / 42 ms; no
-  run in this session reproduced either number. Measured medians are ~5 ms vs
-  ~15 ms. BLAS timings here vary by more than 10x between runs under load
-  (1–30 ms for the same call), so treat the gemm ratio as order-of-magnitude,
-  not a precise figure.
+  run in this session reproduced either number. Measured medians are ~4.6 ms vs
+  ~21 ms. BLAS timings here vary by more than 10x between runs under load
+  (1–16 ms for the same call, this session), so treat the gemm ratio as
+  order-of-magnitude, not a precise figure.
 - The end-to-end model is a loss because at this size the run is dominated by
   Python-level tape bookkeeping, which this port does not make faster, while
   the backward arithmetic it does speed up is a small part of the total. The
@@ -136,8 +136,8 @@ The two elementwise VJPs differ for a reason worth stating: upstream's
 `tanh` VJP needs `cosh(x)`, a square and a divide, so it streams the array three
 times, while the fused kernel streams it once. `exp`'s VJP is already one pass
 in NumPy, so there is nothing to win. The earlier table reported 4.13x for
-`tanh` (444 ms / 108 ms); repeated measurement gives ~1.6–1.8x (~102 ms /
-~59 ms). The 4.13x figure did not reproduce.
+`tanh` (444 ms / 108 ms); repeated measurement gives ~1.6–1.8x (~109 ms /
+~65 ms). The 4.13x figure did not reproduce.
 
 Reproduce with:
 
