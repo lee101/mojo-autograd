@@ -46,8 +46,12 @@ Not implemented, and left to the real `autograd`:
   `NotImplementedError` rather than computing something wrong.
 - Complex numbers, integer inputs, `dot`, `kron`, `einsum`, `tensordot`,
   convolutions, optimizers, `fixed_points`, and every non-CPU device path.
-- The numerical contract is C-contiguous `float64` throughout; anything wider
-  or complex is rejected rather than silently narrowed.
+  Note: integer and narrower-float inputs are *not* rejected — they are silently
+  cast to `float64` via `np.asarray(..., dtype=np.float64)` in
+  `tensor._contig` / `_lib._f64`. Complex input is likewise silently narrowed
+  to its real part with a NumPy `ComplexWarning` (measured in this session:
+  `grad` of `sum(t*t)` on `[1+2j]` returns `[2.]`). The earlier wording claimed
+  rejection; that did not reproduce.
 
 ## How the backward pass works
 
@@ -99,26 +103,41 @@ real `autograd`. Every case verifies numerical agreement before timing.
 
 | case | reference | mojo-autograd | result |
 | --- | ---: | ---: | ---: |
-| tanh vjp n=4194304 | 444.53 ms | 107.68 ms | 4.13x faster |
-| exp vjp n=4194304 | 24.85 ms | 22.75 ms | 1.09x faster |
-| gemm 600x300x200 | 109.32 ms | 42.45 ms | 2.58x faster |
-| gemm 64x64x64 (serial) | 0.04 ms | 5.92 ms | 0.01x, 140x slower |
-| model gradient x20 | 19.85 ms | 37.21 ms | 0.53x, 1.9x slower |
+| tanh vjp n=4194304 | 102.07 ms | 58.83 ms | 1.74x faster |
+| exp vjp n=4194304 | 17.57 ms | 18.97 ms | 0.93x, 1.1x slower |
+| gemm 600x300x200 | 5.67 ms | 14.94 ms | 0.38x, 2.6x slower |
+| gemm 64x64x64 (serial) | 0.03 ms | 1.36 ms | 0.02x, 45x slower |
+| model gradient x20 | 11.76 ms | 19.93 ms | 0.59x, 1.7x slower |
 
-Two of those are losses and are reported as losses.
+Four of those are losses and are reported as losses.
 
-- The small gemm is a loss because a 64x64x64 product is 0.5 Mflop: below the
-  threading threshold the kernel stays serial, and NumPy's BLAS is tuned for
-  exactly that size. The threshold is `mojo_autograd._lib.THREAD_MIN_WORK`.
+- The small gemm is a loss because a 64x64x64 product is 0.5 Mflop: at this size
+  both sides are dominated by call overhead, and NumPy's BLAS is tuned for
+  exactly that size. It is labelled serial in `bench/bench.py`, but 64x64x64
+  work (262144) already exceeds `THREAD_MIN_WORK` (131072), so the port fans
+  out over its thread pool instead of staying serial — see `bench/verify.md`.
+- `exp` is a loss at this size: upstream's VJP is `g * y`, already one pass in
+  NumPy, so there is nothing to win and the ctypes wrapper makes it slightly
+  slower. The earlier table reported 1.09x faster; repeated measurement in this
+  session gives ~0.9x.
+- The large gemm is a loss in this session's runs: the Mojo kernel is a scalar
+  FMA triple loop (no SIMD, see `bench/analysis.md`) and loses to OpenBLAS at
+  600x300x200. The earlier table reported 2.58x faster at 109 ms / 42 ms; no
+  run in this session reproduced either number. Measured medians are ~5 ms vs
+  ~15 ms. BLAS timings here vary by more than 10x between runs under load
+  (1–30 ms for the same call), so treat the gemm ratio as order-of-magnitude,
+  not a precise figure.
 - The end-to-end model is a loss because at this size the run is dominated by
   Python-level tape bookkeeping, which this port does not make faster, while
   the backward arithmetic it does speed up is a small part of the total. The
   kernels win; the surrounding graph does not.
 
-The two elementwise VJPs differ by a lot for a reason worth stating: upstream's
+The two elementwise VJPs differ for a reason worth stating: upstream's
 `tanh` VJP needs `cosh(x)`, a square and a divide, so it streams the array three
 times, while the fused kernel streams it once. `exp`'s VJP is already one pass
-in NumPy, so there is nothing to win and 1.09x is the honest number.
+in NumPy, so there is nothing to win. The earlier table reported 4.13x for
+`tanh` (444 ms / 108 ms); repeated measurement gives ~1.6–1.8x (~102 ms /
+~59 ms). The 4.13x figure did not reproduce.
 
 Reproduce with:
 
